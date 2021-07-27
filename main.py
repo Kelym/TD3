@@ -4,6 +4,8 @@ import gym
 import argparse
 import os
 
+from functools import partial
+
 import utils
 import TD3
 import OurDDPG
@@ -12,22 +14,25 @@ import DDPG
 
 # Runs policy for X episodes and returns average reward
 # A fixed seed is used for the eval environment
-def eval_policy(policy, env_name, seed, eval_episodes=10):
-	eval_env = gym.make(env_name)
+def eval_policy(policy, create_env_fn, seed, eval_episodes=10):
+	eval_env = create_env_fn()
 	eval_env.seed(seed + 100)
 
 	avg_reward = 0.
+	last_rew = 0.
 	for _ in range(eval_episodes):
 		state, done = eval_env.reset(), False
 		while not done:
 			action = policy.select_action(np.array(state))
 			state, reward, done, _ = eval_env.step(action)
 			avg_reward += reward
+		last_rew += reward
 
 	avg_reward /= eval_episodes
+	last_rew /= eval_episodes
 
 	print("---------------------------------------")
-	print(f"Evaluation over {eval_episodes} episodes: {avg_reward:.3f}")
+	print(f"Evaluation over {eval_episodes} episodes: {avg_reward:.3f}, last_rew {last_rew:.2f}")
 	print("---------------------------------------")
 	return avg_reward
 
@@ -63,7 +68,15 @@ if __name__ == "__main__":
 	if args.save_model and not os.path.exists("./models"):
 		os.makedirs("./models")
 
-	env = gym.make(args.env)
+	if "tycho" in args.env.lower():
+		from tycho_env import TychoEnv
+		create_env_fn = partial(TychoEnv,
+			config={"action_space": "eepose",
+					"state_space": "eepose"})
+	else:
+		create_env_fn = partial(gym.make, args.env)
+
+	env = create_env_fn()
 
 	# Set seeds
 	env.seed(args.seed)
@@ -73,11 +86,14 @@ if __name__ == "__main__":
 	
 	state_dim = env.observation_space.shape[0]
 	action_dim = env.action_space.shape[0] 
-	max_action = float(env.action_space.high[0])
+	min_action = env.action_space.low
+	max_action = env.action_space.high
+	half_range_action = (max_action - min_action) / 2
 
 	kwargs = {
 		"state_dim": state_dim,
 		"action_dim": action_dim,
+		"min_action": min_action,
 		"max_action": max_action,
 		"discount": args.discount,
 		"tau": args.tau,
@@ -86,8 +102,8 @@ if __name__ == "__main__":
 	# Initialize policy
 	if args.policy == "TD3":
 		# Target policy smoothing is scaled wrt the action scale
-		kwargs["policy_noise"] = args.policy_noise * max_action
-		kwargs["noise_clip"] = args.noise_clip * max_action
+		kwargs["policy_noise"] = args.policy_noise * half_range_action
+		kwargs["noise_clip"] = args.noise_clip * half_range_action
 		kwargs["policy_freq"] = args.policy_freq
 		policy = TD3.TD3(**kwargs)
 	elif args.policy == "OurDDPG":
@@ -102,7 +118,9 @@ if __name__ == "__main__":
 	replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
 	
 	# Evaluate untrained policy
-	evaluations = [eval_policy(policy, args.env, args.seed)]
+	print("Evaluating untrained")
+	evaluations = [eval_policy(policy, create_env_fn, args.seed)]
+	print("....")
 
 	state, done = env.reset(), False
 	episode_reward = 0
@@ -112,20 +130,17 @@ if __name__ == "__main__":
 	for t in range(int(args.max_timesteps)):
 		
 		episode_timesteps += 1
-
 		# Select action randomly or according to policy
 		if t < args.start_timesteps:
 			action = env.action_space.sample()
 		else:
 			action = (
 				policy.select_action(np.array(state))
-				+ np.random.normal(0, max_action * args.expl_noise, size=action_dim)
-			).clip(-max_action, max_action)
-
+				+ np.random.normal(0, half_range_action * args.expl_noise, size=action_dim)
+			).clip(min_action, max_action)
 		# Perform action
 		next_state, reward, done, _ = env.step(action) 
 		done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0
-
 		# Store data in replay buffer
 		replay_buffer.add(state, action, next_state, reward, done_bool)
 
@@ -138,7 +153,7 @@ if __name__ == "__main__":
 
 		if done: 
 			# +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
-			print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
+			print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f} LastRew: {reward:.2f}")
 			# Reset environment
 			state, done = env.reset(), False
 			episode_reward = 0
@@ -147,6 +162,6 @@ if __name__ == "__main__":
 
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:
-			evaluations.append(eval_policy(policy, args.env, args.seed))
+			evaluations.append(eval_policy(policy, create_env_fn, args.seed))
 			np.save(f"./results/{file_name}", evaluations)
 			if args.save_model: policy.save(f"./models/{file_name}")
