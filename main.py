@@ -11,6 +11,7 @@ import TD3
 import OurDDPG
 import DDPG
 
+from torch.utils.tensorboard import SummaryWriter
 
 # Runs policy for X episodes and returns average reward
 # A fixed seed is used for the eval environment
@@ -52,9 +53,12 @@ if __name__ == "__main__":
 	parser.add_argument("--tau", default=0.005)                     # Target network update rate
 	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
+	parser.add_argument("--critic_lr", default=0.0003)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
+	parser.add_argument("--train_step", default=1, type=int)       # Frequency of delayed policy updates
 	parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
 	parser.add_argument("--load_model", default="")                 # Model load file name, "" doesn't load, "default" uses file_name
+
 	args = parser.parse_args()
 
 	file_name = f"{args.policy}_{args.env}_{args.seed}"
@@ -71,8 +75,8 @@ if __name__ == "__main__":
 	if "tycho" in args.env.lower():
 		from tycho_env import TychoEnv
 		create_env_fn = partial(TychoEnv,
-			config={"action_space": "eepose",
-					"state_space": "eepose"})
+			config={"action_space": "jointpos",
+					"state_space": "jointpos"})
 	else:
 		create_env_fn = partial(gym.make, args.env)
 
@@ -105,6 +109,7 @@ if __name__ == "__main__":
 		kwargs["policy_noise"] = args.policy_noise * half_range_action
 		kwargs["noise_clip"] = args.noise_clip * half_range_action
 		kwargs["policy_freq"] = args.policy_freq
+		kwargs["critic_lr"] = float(args.critic_lr)
 		policy = TD3.TD3(**kwargs)
 	elif args.policy == "OurDDPG":
 		policy = OurDDPG.DDPG(**kwargs)
@@ -121,6 +126,8 @@ if __name__ == "__main__":
 	print("Evaluating untrained")
 	evaluations = [eval_policy(policy, create_env_fn, args.seed)]
 	print("....")
+
+	summaryWriter = SummaryWriter(f"runs/{args.policy}")
 
 	state, done = env.reset(), False
 	episode_reward = 0
@@ -149,16 +156,22 @@ if __name__ == "__main__":
 
 		# Train agent after collecting sufficient data
 		if t >= args.start_timesteps:
-			policy.train(replay_buffer, args.batch_size)
+			policy.train(replay_buffer, args.batch_size, summaryWriter)
 
 		if done: 
 			# +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
 			print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f} LastRew: {reward:.2f}")
+
+			summaryWriter.add_scalar("Rollout/Steps", episode_timesteps, episode_num)
+			summaryWriter.add_scalar("Rollout/Rew", episode_reward, episode_num)
+			summaryWriter.add_scalar("Rollout/LastRew", reward, episode_num)
+
 			# Reset environment
 			state, done = env.reset(), False
 			episode_reward = 0
 			episode_timesteps = 0
 			episode_num += 1 
+
 
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:

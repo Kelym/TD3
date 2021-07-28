@@ -85,16 +85,18 @@ class TD3(object):
 		tau=0.005,
 		policy_noise=0.2,
 		noise_clip=0.5,
-		policy_freq=2
+		policy_freq=2,
+		actor_lr=3e-4,
+		critic_lr=3e-4,
 	):
 
 		self.actor = Actor(state_dim, action_dim, min_action, max_action).to(device)
 		self.actor_target = copy.deepcopy(self.actor)
-		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
+		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
 
 		self.critic = Critic(state_dim, action_dim).to(device)
 		self.critic_target = copy.deepcopy(self.critic)
-		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
+		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
 
 		self.min_action = torch.tensor(min_action, dtype=torch.float32, device=device)
 		self.max_action = torch.tensor(max_action, dtype=torch.float32, device=device)
@@ -112,7 +114,7 @@ class TD3(object):
 		return self.actor(state).cpu().data.numpy().flatten()
 
 
-	def train(self, replay_buffer, batch_size=256):
+	def train(self, replay_buffer, batch_size, summaryWriter):
 		self.total_it += 1
 
 		# Sample replay buffer 
@@ -144,6 +146,9 @@ class TD3(object):
 		critic_loss.backward()
 		self.critic_optimizer.step()
 
+		summaryWriter.add_scalar("Train/CriticLoss", critic_loss.item(), self.total_it)
+		summaryWriter.add_scalar("Train/CriticTarget", target_Q.mean(), self.total_it)
+
 		# Delayed policy updates
 		if self.total_it % self.policy_freq == 0:
 
@@ -161,6 +166,8 @@ class TD3(object):
 
 			for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+			summaryWriter.add_scalar("Train/ActorLoss", actor_loss.item(), self.total_it)
 
 
 	def save(self, filename):
