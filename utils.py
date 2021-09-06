@@ -3,10 +3,11 @@ import torch
 
 
 class ReplayBuffer(object):
-	def __init__(self, state_dim, action_dim, max_size=int(1e6)):
+	def __init__(self, state_dim, action_dim, max_size=int(1e6), reserve_size=0):
 		self.max_size = max_size
 		self.ptr = 0
 		self.size = 0
+		self.reserve_size = reserve_size
 
 		self.state = np.zeros((max_size, state_dim))
 		self.action = np.zeros((max_size, action_dim))
@@ -16,6 +17,24 @@ class ReplayBuffer(object):
 
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+	def add_reserve(self, state, action, next_state, reward, done):
+		self.state[self.ptr] = state
+		self.action[self.ptr] = action
+		self.next_state[self.ptr] = next_state
+		self.reward[self.ptr] = reward
+		self.not_done[self.ptr] = 1. - done
+		self.ptr += 1
+		self.size += 1
+
+	def push_with_reserve(self, state, action, next_state, reward, done):
+		self.state[self.ptr] = state
+		self.action[self.ptr] = action
+		self.next_state[self.ptr] = next_state
+		self.reward[self.ptr] = reward
+		self.not_done[self.ptr] = 1. - done
+
+		self.size = min(self.size + 1, self.max_size)
+		self.ptr = (self.size - self.reserve_size) % (self.max_size - self.reserve_size) + self.reserve_size
 
 	def add(self, state, action, next_state, reward, done):
 		self.state[self.ptr] = state

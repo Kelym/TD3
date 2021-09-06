@@ -113,11 +113,33 @@ class TD3(object):
 		state = torch.FloatTensor(state.reshape(1, -1)).to(device)
 		return self.actor(state).cpu().data.numpy().flatten()
 
+	def train_actor(self, replay_buffer, batch_size, summaryWriter):
 
-	def train(self, replay_buffer, batch_size, summaryWriter):
+		# Sample replay buffer
+		state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
+
+		if True:
+			# Compute actor losse
+			#actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
+			actor_loss = torch.linalg.norm(self.actor(state) - state[:,-3:], dim=1).mean() # SANCHECK: bootstrap with demo
+			#target_Q1, target_Q2 = self.critic_target(state, self.actor(state))
+			#target_Q = torch.min(target_Q1, target_Q2)
+			#actor_loss = -target_Q.mean() # minQforPi
+
+			# Optimize the actor
+			self.actor_optimizer.zero_grad()
+			actor_loss.backward()
+			self.actor_optimizer.step()
+
+			for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+			#summaryWriter.add_scalar("Train/ActorLoss", actor_loss.item(), self.total_it)
+
+
+	def train_critic(self, replay_buffer, batch_size, summaryWriter):
 		self.total_it += 1
-
-		# Sample replay buffer 
+		# Sample replay buffer
 		state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
 
 		with torch.no_grad():
@@ -125,9 +147,45 @@ class TD3(object):
 			noise = (
 				torch.randn_like(action) * self.policy_noise
 			).clamp(-self.noise_clip, self.noise_clip)
-			
+
 			next_action = (
-				self.actor_target(next_state) + noise
+				self.actor_target(next_state) + noise # ? Should we trust the policy decision more as we go?
+				#next_state[:,-3:] + noise # SANCHECK bootstrap with optimal policy
+			).clamp(self.min_action, self.max_action)
+
+			# Compute the target Q value
+			target_Q1, target_Q2 = self.critic_target(next_state, next_action)
+			target_Q = torch.min(target_Q1, target_Q2)
+			target_Q = reward + not_done * self.discount * target_Q
+
+		# Get current Q estimates
+		current_Q1, current_Q2 = self.critic(state, action)
+
+		# Compute critic loss
+		critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+
+		# Optimize the critic
+		self.critic_optimizer.zero_grad()
+		critic_loss.backward()
+		self.critic_optimizer.step()
+
+		summaryWriter.add_scalar("Train/CriticLoss", critic_loss.item(), self.total_it)
+		summaryWriter.add_scalar("Train/CriticTarget", target_Q.mean(), self.total_it)
+
+	def train(self, replay_buffer, batch_size, summaryWriter):
+		self.total_it += 1
+
+		# Sample replay buffer
+		state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
+
+		with torch.no_grad():
+			# Select action according to policy and add clipped noise
+			noise = (
+				torch.randn_like(action) * self.policy_noise
+			).clamp(-self.noise_clip, self.noise_clip)
+
+			next_action = (
+				self.actor_target(next_state) + noise # ? Should we trust the policy decision more as we go?
 			).clamp(self.min_action, self.max_action)
 
 			# Compute the target Q value
@@ -154,11 +212,16 @@ class TD3(object):
 
 			# Compute actor losse
 			actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
-			
-			# Optimize the actor 
-			self.actor_optimizer.zero_grad()
-			actor_loss.backward()
-			self.actor_optimizer.step()
+			#actor_loss = torch.linalg.norm(self.actor(state) - state[:,-3:], dim=1).mean() # SANCHECK: optimal critic
+			#target_Q1, target_Q2 = self.critic_target(state, self.actor(state))
+			#target_Q = torch.min(target_Q1, target_Q2)
+			#actor_loss = -target_Q.mean() # minQforPi
+
+			# Optimize the actor SANCHECK freeze actor
+			if self.total_it > 0:
+				self.actor_optimizer.zero_grad()
+				actor_loss.backward()
+				self.actor_optimizer.step()
 
 			# Update the frozen target models
 			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
@@ -173,7 +236,7 @@ class TD3(object):
 	def save(self, filename):
 		torch.save(self.critic.state_dict(), filename + "_critic")
 		torch.save(self.critic_optimizer.state_dict(), filename + "_critic_optimizer")
-		
+
 		torch.save(self.actor.state_dict(), filename + "_actor")
 		torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer")
 
@@ -186,4 +249,3 @@ class TD3(object):
 		self.actor.load_state_dict(torch.load(filename + "_actor"))
 		self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
 		self.actor_target = copy.deepcopy(self.actor)
-		
